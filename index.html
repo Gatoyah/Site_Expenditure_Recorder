@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Expenditure Tracker</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <button id="backBtn" class="btn-link hidden" type="button">&larr; All sites</button>
+  <h1 id="pageTitle">Site Expenditure Tracker</h1>
+  <div class="topbar-right">
+    <button id="backupBtn" class="btn" type="button" title="Save a backup file of all data">Backup</button>
+    <label class="btn" title="Restore from a backup file">Restore<input id="restoreInput" type="file" accept=".json" hidden></label>
+  </div>
+</header>
+
+<!-- ============ HOME: choose a site ============ -->
+<main id="homeView">
+  <div class="home-head">
+    <h2>Choose a site</h2>
+    <button id="addSiteBtn" class="btn btn-primary" type="button">+ Add new site</button>
+  </div>
+  <div id="siteList"></div>
+</main>
+
+<!-- ============ SITE VIEW ============ -->
+<main id="siteView" class="hidden">
+  <section class="summary">
+    <div class="stat"><span>Total Received</span><strong id="sumFunds">0</strong></div>
+    <div class="stat"><span>Total Used</span><strong id="sumSpent">0</strong></div>
+    <div class="stat"><span>Balance</span><strong id="sumBalance">0</strong></div>
+    <div class="stat"><span>Entries</span><strong id="sumCount">0</strong></div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="entries" type="button">All Entries</button>
+    <button class="tab" data-tab="total" type="button">Total</button>
+    <button class="tab" data-tab="categories" type="button">Categories</button>
+    <button class="tab" data-tab="summary" type="button">Summary</button>
+    <button class="tab" data-tab="images" type="button">Site images</button>
+    <button class="tab" data-tab="pow" type="button">POW</button>
+    <button class="tab" data-tab="settings" type="button">Settings</button>
+  </nav>
+
+  <!-- All Entries -->
+  <section id="tab-entries" class="tab-panel">
+    <form id="entryForm" class="card form-grid" autocomplete="off">
+      <h3 class="span-all">New entry</h3>
+
+      <fieldset class="span-all fund-choice">
+        <legend>Money from</legend>
+        <label><input type="radio" name="fundMode" value="existing" checked> Funds already added</label>
+        <label><input type="radio" name="fundMode" value="new"> A new fund</label>
+      </fieldset>
+
+      <div id="existingFundBox" class="span-all">
+        <label>Fund ID
+          <select id="fundSelect"></select>
+        </label>
+      </div>
+
+      <div id="newFundBox" class="span-all sub-grid hidden">
+        <label>Fund ID<input id="nfCode" type="text"></label>
+        <label>Date<input id="nfDate" type="date"></label>
+        <label>Received From<input id="nfFrom" type="text"></label>
+        <label>Mode<input id="nfMode" type="text" list="modeList"></label>
+        <label>Amount 1 (GH¢)<input id="nfAmount1" type="number" step="0.01" min="0" inputmode="decimal"></label>
+        <label>Amount 2 (GH¢)<input id="nfAmount2" type="number" step="0.01" min="0" inputmode="decimal"></label>
+      </div>
+
+      <label>Date
+        <input id="exDate" type="date">
+      </label>
+      <label class="span-3">Used For
+        <input id="exUsedFor" type="text" required list="usedForList">
+      </label>
+      <label class="span-2">Category
+        <select id="exCategory" required></select>
+      </label>
+      <label class="span-2">Item
+        <select id="exItem" required></select>
+      </label>
+      <label class="span-2">Amount (GH¢)
+        <input id="exAmount" type="number" step="0.01" min="0" required inputmode="decimal">
+      </label>
+      <div class="span-all">
+        <div id="qtyBox" class="qty-grid"></div>
+        <button id="moreQtyBtn" class="btn-link" type="button">+ Other quantities</button>
+      </div>
+      <div class="span-all form-actions">
+        <span id="fundHint" class="muted"></span>
+        <button class="btn btn-primary" type="submit">Insert</button>
+      </div>
+    </form>
+
+    <div class="card">
+      <div class="table-tools">
+        <h3>All Entries</h3>
+        <div class="filters">
+          <input id="fSearch" type="search" placeholder="Search">
+          <select id="fFund"><option value="">All funds</option></select>
+          <select id="fCategory"><option value="">All categories</option></select>
+          <select id="fItem"><option value="">All items</option></select>
+        </div>
+        <div class="exports">
+          <button class="btn xlsxBtn" type="button">Download Excel</button>
+          <button class="btn pdfBtn" type="button">Download PDF</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="entryTable">
+          <thead><tr><th>No.</th><th>Fund ID</th><th>Date</th><th>Used For</th><th>Category</th><th>Item</th><th class="num">Amount (GH¢)</th><th>Quantity</th><th></th></tr></thead>
+          <tbody></tbody>
+          <tfoot><tr><td colspan="6">Total Used</td><td class="num" id="filteredTotal">0</td><td colspan="2"></td></tr></tfoot>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Total (funds) -->
+  <section id="tab-total" class="tab-panel hidden">
+    <div class="card">
+      <div class="table-tools">
+        <h3>Total - Funds Received, Used and Balance</h3>
+        <button id="addFundBtn" class="btn btn-primary" type="button">+ Add fund</button>
+      </div>
+      <div class="table-wrap">
+        <table id="fundTable">
+          <thead><tr><th>Fund ID</th><th>Date</th><th>Received From</th><th>Mode</th><th class="num">Amount 1 (GH¢)</th><th class="num">Amount 2 (GH¢)</th><th class="num">Total Received (GH¢)</th><th class="num">Used (GH¢)</th><th class="num">Balance (GH¢)</th><th></th></tr></thead>
+          <tbody></tbody>
+          <tfoot></tfoot>
+        </table>
+      </div>
+      <p class="muted small">Click a fund to see what it was used for.</p>
+    </div>
+    <div id="fundDetail" class="card hidden"></div>
+  </section>
+
+  <!-- Categories -->
+  <section id="tab-categories" class="tab-panel hidden">
+    <div id="categorySheets"></div>
+  </section>
+
+  <!-- Summary -->
+  <section id="tab-summary" class="tab-panel hidden">
+    <div class="summary-grid">
+      <div class="card">
+        <h3>Summary</h3>
+        <table id="sumTotals"></table>
+        <h3 class="mt">Spent On</h3>
+        <table id="sumSpentOn"></table>
+      </div>
+      <div class="card">
+        <h3>Funds</h3>
+        <table id="sumFundsTable"></table>
+      </div>
+    </div>
+    <div class="exports"><button class="btn xlsxBtn" type="button">Download Excel</button><button class="btn pdfBtn" type="button">Download PDF</button></div>
+  </section>
+
+  <!-- Images -->
+  <section id="tab-images" class="tab-panel hidden">
+    <div class="card">
+      <div class="table-tools">
+        <h3>Site images and overview</h3>
+        <div id="ownerControls"></div>
+      </div>
+      <div id="overviewBox" class="overview"></div>
+      <div id="imageUpload" class="hidden upload-row">
+        <label class="btn btn-primary">+ Add images<input id="imageInput" type="file" accept="image/*" multiple hidden></label>
+        <input id="imageCaption" type="text" placeholder="Caption for these images (optional)">
+      </div>
+      <div id="gallery" class="gallery"></div>
+    </div>
+  </section>
+
+  <!-- POW -->
+  <section id="tab-pow" class="tab-panel hidden">
+    <div class="card">
+      <div class="table-tools">
+        <h3>Programme of Works (POW)</h3>
+        <div class="exports">
+          <label class="btn btn-primary">Upload POW Excel<input id="powInput" type="file" accept=".xlsx,.xls,.csv" hidden></label>
+          <button id="powDownload" class="btn hidden" type="button">Download POW</button>
+          <button id="powRemove" class="btn btn-danger hidden" type="button">Remove</button>
+        </div>
+      </div>
+      <p id="powInfo" class="muted">No POW uploaded for this site yet.</p>
+      <div id="powSheetTabs" class="sheet-tabs"></div>
+      <div class="table-wrap"><table id="powTable"></table></div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="tab-panel hidden">
+    <div class="card">
+      <h3>Site details</h3>
+      <form id="siteForm" class="form-grid">
+        <label class="span-2">Site name<input id="sName" type="text" required></label>
+        <label>Location<input id="sLocation" type="text"></label>
+        <label>Status
+          <select id="sStatus"><option value="active">Active (I'm here now)</option><option value="done">Done / transferred</option></select>
+        </label>
+        <div class="span-all form-actions"><span></span><button class="btn btn-primary" type="submit">Save details</button></div>
+      </form>
+    </div>
+    <div class="settings-grid">
+      <div class="card"><h3>Categories</h3><div id="listCategories"></div></div>
+      <div class="card"><h3>Items</h3><p class="muted small">"Quantities" sets which quantity boxes show for that item, and the words used in the Categories sheets.</p><div id="listItems"></div></div>
+      <div class="card"><h3>Quantity columns</h3><div id="listQty"></div></div>
+      <div class="card"><h3>Modes</h3><div id="listModes"></div></div>
+    </div>
+    <div class="card">
+      <h3>Import from Excel</h3>
+      <p class="muted">Add funds and entries from an Excel file laid out like Site_Expenditure_Tracker.xlsx (sheets "Total" and "All Entries").</p>
+      <label class="btn">Choose Excel file<input id="importInput" type="file" accept=".xlsx,.xls" hidden></label>
+    </div>
+    <div class="card danger-zone">
+      <h3>Delete site</h3>
+      <p class="muted">This removes the site and all its records, images and POW from this computer. Make a backup first.</p>
+      <button id="deleteSiteBtn" class="btn btn-danger" type="button">Delete this site</button>
+    </div>
+  </section>
+</main>
+
+<datalist id="usedForList"></datalist>
+<datalist id="modeList"></datalist>
+
+<!-- Dialog -->
+<dialog id="dialog">
+  <form method="dialog" id="dialogForm">
+    <h3 id="dialogTitle"></h3>
+    <div id="dialogBody"></div>
+    <div class="form-actions">
+      <button value="cancel" class="btn" type="submit" formnovalidate>Cancel</button>
+      <button value="ok" class="btn btn-primary" type="submit" id="dialogOk">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="lib/xlsx.full.min.js"></script>
+<script src="lib/jspdf.umd.min.js"></script>
+<script src="lib/jspdf.plugin.autotable.min.js"></script>
+<script src="berekum-data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
