@@ -12,8 +12,9 @@
   <button id="backBtn" class="btn-link hidden" type="button">&larr; All sites</button>
   <h1 id="pageTitle">Site Expenditure Tracker</h1>
   <div class="topbar-right">
-    <button id="backupBtn" class="btn" type="button" title="Save a backup file of all data">Backup</button>
-    <label class="btn" title="Restore from a backup file">Restore<input id="restoreInput" type="file" accept=".json" hidden></label>
+    <button id="syncBtn" class="btn sync-btn" type="button" title="">Online</button>
+    <button id="backupBtn" class="btn owner-only" type="button" title="Save a backup file of all data">Backup</button>
+    <label class="btn owner-only" title="Restore from a backup file">Restore<input id="restoreInput" type="file" accept=".json" hidden></label>
   </div>
 </header>
 
@@ -21,7 +22,7 @@
 <main id="homeView">
   <div class="home-head">
     <h2>Choose a site</h2>
-    <button id="addSiteBtn" class="btn btn-primary" type="button">+ Add new site</button>
+    <button id="addSiteBtn" class="btn btn-primary owner-only" type="button">+ Add new site</button>
   </div>
   <div id="siteList"></div>
 </main>
@@ -42,12 +43,12 @@
     <button class="tab" data-tab="summary" type="button">Summary</button>
     <button class="tab" data-tab="images" type="button">Site images</button>
     <button class="tab" data-tab="pow" type="button">POW</button>
-    <button class="tab" data-tab="settings" type="button">Settings</button>
+    <button class="tab owner-only" data-tab="settings" type="button">Settings</button>
   </nav>
 
   <!-- All Entries -->
   <section id="tab-entries" class="tab-panel">
-    <form id="entryForm" class="card form-grid" autocomplete="off">
+    <form id="entryForm" class="card form-grid owner-only" autocomplete="off">
       <h3 class="span-all">New entry</h3>
 
       <fieldset class="span-all fund-choice">
@@ -125,7 +126,7 @@
     <div class="card">
       <div class="table-tools">
         <h3>Total - Funds Received, Used and Balance</h3>
-        <button id="addFundBtn" class="btn btn-primary" type="button">+ Add fund</button>
+        <button id="addFundBtn" class="btn btn-primary owner-only" type="button">+ Add fund</button>
       </div>
       <div class="table-wrap">
         <table id="fundTable">
@@ -183,9 +184,9 @@
       <div class="table-tools">
         <h3>Programme of Works (POW)</h3>
         <div class="exports">
-          <label class="btn btn-primary">Upload POW Excel<input id="powInput" type="file" accept=".xlsx,.xls,.csv" hidden></label>
+          <label class="btn btn-primary owner-only">Upload POW Excel<input id="powInput" type="file" accept=".xlsx,.xls,.csv" hidden></label>
           <button id="powDownload" class="btn hidden" type="button">Download POW</button>
-          <button id="powRemove" class="btn btn-danger hidden" type="button">Remove</button>
+          <button id="powRemove" class="btn btn-danger hidden owner-only" type="button">Remove</button>
         </div>
       </div>
       <p id="powInfo" class="muted">No POW uploaded for this site yet.</p>
@@ -246,7 +247,7 @@
 <script src="lib/xlsx.full.min.js"></script>
 <script src="lib/jspdf.umd.min.js"></script>
 <script src="lib/jspdf.plugin.autotable.min.js"></script>
-<script src="berekum-data.js"></script>
+<script src="berekum-lists.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

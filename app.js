@@ -1,7 +1,7 @@
 /* Site Expenditure Tracker
  * Layout and wording follow Site_Expenditure_Tracker.xlsx.
- * Everything is saved in this browser on this computer (IndexedDB).
- * Use Backup / Restore to move data to another computer or keep a safe copy.
+ * Records are kept in this browser (IndexedDB) and, once "Online saving" is set up,
+ * in an encrypted file (data.enc) in the GitHub repo, so every device sees the same records.
  */
 'use strict';
 
@@ -11,17 +11,18 @@ const DEFAULT_MODES = ['MoMo', 'Physical Cash'];
 /* ---------------- Database ---------------- */
 const DB_NAME = 'site-expenditure-tracker';
 const STORES = ['sites', 'funds', 'expenses', 'images', 'pow', 'meta'];
+const SYNCED = ['sites', 'funds', 'expenses', 'images', 'pow'];
 let db;
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
       const d = req.result;
-      for (const s of STORES) {
+      for (const s of [...STORES, 'queue']) {
         if (!d.objectStoreNames.contains(s)) {
           const store = d.createObjectStore(s, { keyPath: 'id' });
-          if (s !== 'sites' && s !== 'meta') store.createIndex('siteId', 'siteId');
+          if (!['sites', 'meta', 'queue'].includes(s)) store.createIndex('siteId', 'siteId');
         }
       }
     };
@@ -31,8 +32,32 @@ function openDB() {
 }
 const tx = (store, mode = 'readonly') => db.transaction(store, mode).objectStore(store);
 const p = (req) => new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
-const put = (store, obj) => p(tx(store, 'readwrite').put(obj));
-const del = (store, id) => p(tx(store, 'readwrite').delete(id));
+const rawPut = (store, obj) => p(tx(store, 'readwrite').put(obj));
+const rawDel = (store, id) => p(tx(store, 'readwrite').delete(id));
+const clearStore = (store) => p(tx(store, 'readwrite').clear());
+// put/del save on this device and, when online saving is on, queue the change for GitHub
+async function put(store, rec) {
+  let fileOp = null;
+  if ((store === 'images' && rec.blob) || (store === 'pow' && rec.data)) {
+    if (!rec.path) { rec.path = `${store}/${rec.id}-${Math.random().toString(36).slice(2, 8)}.bin`; fileOp = { t: 'file', s: store, id: rec.id, path: rec.path }; }
+  }
+  await rawPut(store, rec);
+  if (SYNCED.includes(store) && canSync()) {
+    if (fileOp) await enqueue(fileOp);
+    await enqueue({ t: 'put', s: store, r: stripRec(store, rec) });
+    scheduleFlush();
+  }
+}
+async function del(store, id) {
+  await rawDel(store, id);
+  if (SYNCED.includes(store) && canSync()) { await enqueue({ t: 'del', s: store, id }); scheduleFlush(); }
+}
+function stripRec(store, rec) {
+  const r = { ...rec };
+  if (store === 'images') delete r.blob;
+  if (store === 'pow') delete r.data;
+  return r;
+}
 const get = (store, id) => p(tx(store).get(id));
 const all = (store) => p(tx(store).getAll());
 const bySite = (store, siteId) => p(tx(store).index('siteId').getAll(siteId));
@@ -139,24 +164,17 @@ function newSite(name, location, lists = {}) {
     modes: [...(lists.modes || DEFAULT_MODES)],
   };
 }
+// Starting sites. Berekum gets the categories, items and quantity columns from the Excel
+// (no money records: those come from the starting-data file, so nothing private is in the code).
 async function seedIfEmpty() {
   if (await get('meta', 'seeded')) return;
-  const B = window.BEREKUM_DATA;
-  const ber = newSite('Berekum Holy Family Hospital', 'Berekum', B);
+  if ((await all('sites')).length) { await rawPut('meta', { id: 'seeded', value: true }); return; }
+  const ber = newSite('Berekum Holy Family Hospital', 'Berekum', window.BEREKUM_LISTS || {});
   ber.createdAt = Date.now() - 2;
-  await put('sites', ber);
-  const ids = {};
-  let t = Date.now() - 100000;
-  for (const f of B.funds) {
-    const rec = { id: uid(), siteId: ber.id, code: f.code, date: f.date, receivedFrom: f.receivedFrom, mode: f.mode, amount1: f.amount1, amount2: f.amount2, createdAt: t++ };
-    ids[f.code] = rec.id; await put('funds', rec);
-  }
-  for (const e of B.entries) {
-    await put('expenses', { id: uid(), siteId: ber.id, fundId: ids[e.fund], date: e.date, usedFor: e.usedFor, category: e.category, item: e.item, amount: e.amount, qty: e.qty, createdAt: t++ });
-  }
-  const k = newSite('Komfo Anokye Teaching Hospital', 'Kumasi'); k.createdAt = Date.now() - 1; await put('sites', k);
-  await put('sites', newSite('Tamale Teaching Hospital', 'Tamale'));
-  await put('meta', { id: 'seeded', value: true });
+  await rawPut('sites', ber);
+  const k = newSite('Komfo Anokye Teaching Hospital', 'Kumasi'); k.createdAt = Date.now() - 1; await rawPut('sites', k);
+  await rawPut('sites', newSite('Tamale Teaching Hospital', 'Tamale'));
+  await rawPut('meta', { id: 'seeded', value: true });
 }
 
 /* ---------------- Home ---------------- */
@@ -169,6 +187,14 @@ async function showHome() {
   document.title = 'Site Expenditure Tracker';
   history.replaceState(null, '', location.pathname);
 
+  if (onGithubPages() && !cfg.key) {
+    $('#siteList').innerHTML = `<div class="card"><h3>Open the full link</h3><p>This link is missing its key, so the records can't be shown.
+      Open the full link you were given (it ends with <strong>#k=…</strong>), or paste it here:</p>
+      <form id="linkForm" class="list-add"><input id="linkInput" placeholder="Paste the full link" required><button class="btn btn-primary" type="submit">Open</button></form>
+      <p class="small muted mt">Setting this up for the first time? Press <strong>Online</strong> at the top.</p></div>`;
+    $('#linkForm').onsubmit = (e) => { e.preventDefault(); const k = keyFromLink($('#linkInput').value); if (!k) return toast('That link has no key'); cfg.key = k; saveCfg(); location.reload(); };
+    return;
+  }
   const sites = (await all('sites')).sort((a, b) => a.createdAt - b.createdAt);
   const allFunds = await all('funds');
   const allEx = await all('expenses');
@@ -188,7 +214,9 @@ async function showHome() {
   const done = sites.filter((s) => s.status === 'done');
   let html = active.length ? `<div class="site-list">${active.map(card).join('')}</div>` : '<p class="muted">No active sites. Add one with the button above.</p>';
   if (done.length) html += `<div class="section-label">Done / transferred</div><div class="site-list">${done.map(card).join('')}</div>`;
+  if (!isOnline()) html = `<div class="notice owner-only">Records are only saved on this device. <button class="btn-link" id="setupLink" type="button">Set up online saving</button> so they open on any phone or computer.</div>` + html;
   $('#siteList').innerHTML = html;
+  if ($('#setupLink')) $('#setupLink').onclick = onlineDialog;
   $$('.site-card').forEach((b) => b.addEventListener('click', () => openSite(b.dataset.id)));
 }
 
@@ -559,55 +587,41 @@ async function editItemQty(i) {
 }
 const defaultSuffix = (label) => (/\(([^)]+)\)/.exec(label) || [, ''])[1];
 
-/* ---------------- Owner PIN (images) ---------------- */
-async function pinHash() { return (await get('meta', 'pin'))?.value || null; }
-async function isOwner() {
-  const h = await pinHash(); if (!h) return false;
-  try { return localStorage.getItem('ownerKey') === h; } catch { return false; }
-}
-function rememberOwner(h) { try { localStorage.setItem('ownerKey', h); } catch { /* private window */ } }
-
-async function unlockOwner() {
-  const h = await pinHash();
-  if (!h) {
-    const v = await ask('Set your owner PIN', `<p>Only someone with this PIN can add or remove site images. This computer will remember it.</p>
-      <label>New PIN<input name="pin" type="password" inputmode="numeric" required></label>
-      <label>Type it again<input name="pin2" type="password" inputmode="numeric" required></label>`, { okText: 'Set PIN' });
-    if (!v) return;
-    if (v.pin.length < 4) return toast('PIN must be at least 4 characters');
-    if (v.pin !== v.pin2) return toast('The two PINs do not match');
-    const nh = await sha256('ste:' + v.pin);
-    await put('meta', { id: 'pin', value: nh });
-    rememberOwner(nh);
-    toast('PIN set. Images unlocked on this computer.');
-  } else {
-    const v = await ask('Enter owner PIN', '<label>PIN<input name="pin" type="password" inputmode="numeric" required></label>', { okText: 'Unlock' });
-    if (!v) return;
-    if ((await sha256('ste:' + v.pin)) !== h) return toast('Wrong PIN');
-    rememberOwner(h);
-    toast('Unlocked');
-  }
-  renderImages();
-}
-function lockOwner() { try { localStorage.removeItem('ownerKey'); } catch { /* ignore */ } renderImages(); toast('Locked'); }
-
 /* ---------------- Images ---------------- */
+// Only a device that can edit (has your GitHub key, or is not online yet) can add or remove images.
 let objectUrls = [];
 async function renderImages() {
-  const owner = await isOwner();
-  $('#ownerControls').innerHTML = owner
-    ? '<button class="btn" id="editOverview" type="button">Edit overview</button> <button class="btn" id="lockBtn" type="button">Lock</button>'
-    : '<span class="muted">View only</span> <button class="btn btn-small" id="unlockBtn" type="button">Owner</button>';
+  const owner = canEdit();
+  $('#ownerControls').innerHTML = owner ? '<button class="btn" id="editOverview" type="button">Edit overview</button>' : '<span class="muted">View only</span>';
   $('#imageUpload').classList.toggle('hidden', !owner);
   $('#overviewBox').innerHTML = site.overview ? `<p>${esc(site.overview)}</p>` : (owner ? '<p class="muted">No overview yet. Click "Edit overview" to describe the site.</p>' : '');
   objectUrls.forEach(URL.revokeObjectURL); objectUrls = [];
   const imgs = (await bySite('images', site.id)).sort((a, b) => b.createdAt - a.createdAt);
-  $('#gallery').innerHTML = imgs.length ? imgs.map((im) => {
-    const u = URL.createObjectURL(im.blob); objectUrls.push(u);
-    return `<figure><img src="${u}" alt="${esc(im.caption || 'Site image')}" data-full="${u}">
+  $('#gallery').innerHTML = imgs.length ? imgs.map((im) => `<figure><img alt="${esc(im.caption || 'Site image')}" data-img="${im.id}">
       <figcaption><span>${esc(im.caption || '')} <span class="muted">${fmtDate(im.date)}</span></span>
-      ${owner ? `<button class="icon-btn" data-imgdel="${im.id}" title="Remove" type="button">&times;</button>` : ''}</figcaption></figure>`;
-  }).join('') : '<p class="muted">No images yet.</p>';
+      ${owner ? `<button class="icon-btn" data-imgdel="${im.id}" title="Remove" type="button">&times;</button>` : ''}</figcaption></figure>`).join('')
+    : '<p class="muted">No images yet.</p>';
+  const siteId = site.id;
+  for (const im of imgs) {
+    const blob = await fileBlob('images', im).catch(() => null);
+    if (!site || site.id !== siteId) return;
+    const el = document.querySelector(`img[data-img="${im.id}"]`);
+    if (!el) continue;
+    if (!blob) { el.alt = 'Image could not load'; continue; }
+    const u = URL.createObjectURL(blob); objectUrls.push(u);
+    el.src = u; el.dataset.full = u;
+  }
+}
+// Gets an image/POW file: from this device if saved here, otherwise from GitHub (then kept here)
+async function fileBlob(store, rec) {
+  if (store === 'images' && rec.blob) return rec.blob;
+  if (store === 'pow' && rec.data) return new Blob([rec.data]);
+  if (!rec.path || !isOnline()) return null;
+  const bytes = await downloadFile(rec.path);
+  const fresh = await get(store, rec.id);
+  if (store === 'images') { if (fresh) await rawPut(store, { ...fresh, blob: new Blob([bytes], { type: 'image/jpeg' }) }); return new Blob([bytes], { type: 'image/jpeg' }); }
+  if (fresh) await rawPut(store, { ...fresh, data: bytes });
+  return new Blob([bytes]);
 }
 
 async function shrinkImage(file, maxSide = 1800) {
@@ -622,7 +636,7 @@ async function shrinkImage(file, maxSide = 1800) {
   } catch { return file; }
 }
 async function addImages(files) {
-  if (!(await isOwner())) return toast('Locked');
+  if (!canEdit()) return toast('View only');
   const caption = $('#imageCaption').value.trim();
   for (const f of files) await put('images', { id: uid(), siteId: site.id, blob: await shrinkImage(f), caption, date: today(), createdAt: Date.now() });
   $('#imageCaption').value = '';
@@ -638,7 +652,9 @@ async function renderPow() {
   $('#powRemove').classList.toggle('hidden', !pow);
   if (!pow) { $('#powInfo').textContent = 'No POW uploaded for this site yet.'; $('#powSheetTabs').innerHTML = ''; $('#powTable').innerHTML = ''; return; }
   $('#powInfo').textContent = `${pow.fileName} — uploaded ${new Date(pow.uploadedAt).toLocaleString()}`;
-  const wb = XLSX.read(pow.data, { type: 'array' });
+  let data;
+  try { data = new Uint8Array(await (await fileBlob('pow', pow)).arrayBuffer()); } catch { $('#powInfo').textContent += ' (could not load the file right now)'; return; }
+  const wb = XLSX.read(data, { type: 'array' });
   if (powSheet >= wb.SheetNames.length) powSheet = 0;
   $('#powSheetTabs').innerHTML = wb.SheetNames.length > 1
     ? wb.SheetNames.map((n, i) => `<button class="btn btn-small ${i === powSheet ? 'btn-primary' : ''}" data-sheet="${i}" type="button">${esc(n)}</button>`).join('') : '';
@@ -656,7 +672,7 @@ async function uploadPow(file) {
 }
 async function downloadPow() {
   const pow = await get('pow', site.id); if (!pow) return;
-  downloadBlob(new Blob([pow.data]), pow.fileName);
+  try { downloadBlob(await fileBlob('pow', pow), pow.fileName); } catch { toast('Could not load the POW file'); }
 }
 function downloadBlob(blob, name) {
   const a = document.createElement('a');
@@ -850,34 +866,298 @@ const blobToDataUrl = (b) => new Promise((r) => { const fr = new FileReader(); f
 const dataUrlToBlob = async (u) => (await fetch(u)).blob();
 
 async function backup() {
+  toast('Preparing backup…');
   const out = { app: 'site-expenditure-tracker', version: 2, savedAt: new Date().toISOString() };
-  for (const s of STORES) out[s] = await all(s);
-  out.images = await Promise.all(out.images.map(async (im) => ({ ...im, blob: await blobToDataUrl(im.blob) })));
-  out.pow = out.pow.map((pw) => ({ ...pw, data: Array.from(pw.data) }));
+  for (const s of SYNCED) out[s] = await all(s);
+  out.meta = [{ id: 'seeded', value: true }];
+  out.images = await Promise.all(out.images.map(async (im) => { const b = await fileBlob('images', im).catch(() => null); const r = stripRec('images', im); if (b) r.blob = await blobToDataUrl(b); return r; }));
+  out.pow = await Promise.all(out.pow.map(async (pw) => { const b = await fileBlob('pow', pw).catch(() => null); const r = stripRec('pow', pw); if (b) r.data = Array.from(new Uint8Array(await b.arrayBuffer())); return r; }));
   downloadBlob(new Blob([JSON.stringify(out)], { type: 'application/json' }), `Expenditure_Backup_${today()}.json`);
   toast('Backup saved to your Downloads');
 }
-async function restore(file) {
+async function readBackupFile(file) {
   let data;
-  try { data = JSON.parse(await file.text()); } catch { return toast('That is not a backup file'); }
-  if (data.app !== 'site-expenditure-tracker') return toast('That is not a backup file');
-  if (!(await confirmBox('Restore backup', `Replace everything on this computer with the backup from ${new Date(data.savedAt).toLocaleString()}?`, 'Restore'))) return;
-  for (const s of STORES) await p(tx(s, 'readwrite').clear());
-  for (const s of STORES) {
+  try { data = JSON.parse(await file.text()); } catch { return null; }
+  return data && data.app === 'site-expenditure-tracker' ? data : null;
+}
+// Replaces everything on this device with a backup; when online, also replaces the online copy
+async function loadBackupData(data) {
+  for (const s of [...STORES, 'queue']) await clearStore(s);
+  for (const s of SYNCED) {
     for (let rec of data[s] || []) {
-      if (s === 'images') rec = { ...rec, blob: await dataUrlToBlob(rec.blob) };
-      if (s === 'pow') rec = { ...rec, data: new Uint8Array(rec.data) };
-      await put(s, rec);
+      if (s === 'images' && rec.blob) { rec = { ...rec, blob: await dataUrlToBlob(rec.blob) }; delete rec.path; }
+      if (s === 'pow' && rec.data) { rec = { ...rec, data: new Uint8Array(rec.data) }; delete rec.path; }
+      await rawPut(s, rec);
     }
   }
-  await put('meta', { id: 'seeded', value: true });
+  await rawPut('meta', { id: 'seeded', value: true });
+  if (canSync()) await pushEverything();
+}
+async function restore(file) {
+  const data = await readBackupFile(file);
+  if (!data) return toast('That is not a backup file');
+  const where = canSync() ? 'on this device and online' : 'on this device';
+  if (!(await confirmBox('Restore backup', `Replace everything ${where} with the backup from ${new Date(data.savedAt).toLocaleString()}?`, 'Restore'))) return;
+  await loadBackupData(data);
   toast('Backup restored');
   showHome();
 }
 
+/* ---------------- Online saving (encrypted file in the GitHub repo) ----------------
+ * data.enc  = all records, encrypted (AES-GCM) with the key that is in your link (#k=...)
+ * images/*.bin, pow/*.bin = image and POW files, encrypted the same way
+ * Anyone with the full link can read. Only a device holding your GitHub token can save.
+ */
+let cfg = loadCfg();
+function loadCfg() { try { return JSON.parse(localStorage.getItem('sync') || 'null') || {}; } catch { return {}; } }
+function saveCfg() { try { localStorage.setItem('sync', JSON.stringify(cfg)); } catch { /* private window */ } }
+const onGithubPages = () => /\.github\.io$/i.test(location.hostname);
+const isOnline = () => !!(cfg.owner && cfg.repo && cfg.key);
+const canSync = () => isOnline() && !!cfg.token;
+const canEdit = () => !isOnline() || !!cfg.token;
+const shareLink = () => `https://${cfg.owner.toLowerCase()}.github.io/${cfg.repo}/#k=${cfg.key}`;
+function keyFromLink(s) { const m = /[#&?]k=([\w-]{16,})/.exec(String(s || '').trim()); return m ? m[1] : (/^[\w-]{20,}$/.test(String(s).trim()) ? String(s).trim() : null); }
+
+function bytesToB64(bytes) { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+function b64ToBytes(b64) { const s = atob(b64.replace(/\s/g, '')); const out = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i); return out; }
+const b64url = (bytes) => bytesToB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64url = (s) => b64ToBytes(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4));
+
+let cryptoKey = null, cryptoKeyFor = null;
+async function getKey() {
+  if (cryptoKeyFor !== cfg.key) { cryptoKey = await crypto.subtle.importKey('raw', unb64url(cfg.key), 'AES-GCM', false, ['encrypt', 'decrypt']); cryptoKeyFor = cfg.key; }
+  return cryptoKey;
+}
+async function encrypt(bytes) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await getKey(), bytes));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12); return out;
+}
+async function decrypt(bytes) {
+  try { return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes.slice(0, 12) }, await getKey(), bytes.slice(12))); }
+  catch { throw new Error('badkey'); }
+}
+
+async function gh(path, { method = 'GET', body, raw = false, token = cfg.token } = {}) {
+  const headers = { Accept: raw ? 'application/vnd.github.raw' : 'application/vnd.github+json' };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}${path}` + (method === 'GET' ? (path.includes('?') ? '&' : '?') + 't=' + Date.now() : '');
+  return fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+}
+async function downloadFile(path) {
+  const r = await gh('/contents/' + path, { raw: true });
+  if (!r.ok) throw new Error('GitHub ' + r.status);
+  return decrypt(new Uint8Array(await r.arrayBuffer()));
+}
+async function uploadFile(path, plainBytes, sha, message) {
+  return gh('/contents/' + path, { method: 'PUT', body: { message, content: bytesToB64(await encrypt(plainBytes)), ...(sha ? { sha } : {}) } });
+}
+async function fetchDoc() { // -> { doc, sha } or null when nothing is online yet
+  const r = await gh('/contents/data.enc');
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('GitHub ' + r.status);
+  const j = await r.json();
+  let bytes;
+  if (j.content) bytes = b64ToBytes(j.content);
+  else { const rr = await gh('/contents/data.enc', { raw: true }); if (!rr.ok) throw new Error('GitHub ' + rr.status); bytes = new Uint8Array(await rr.arrayBuffer()); }
+  return { doc: JSON.parse(new TextDecoder().decode(await decrypt(bytes))), sha: j.sha };
+}
+
+// Pending changes waiting to reach GitHub (kept on this device, so nothing is lost offline)
+let qSeq = 0;
+const enqueue = (op) => rawPut('queue', { id: Date.now() * 1000 + (qSeq++ % 1000), op });
+function applyOp(doc, op) {
+  if (op.t === 'replace') { Object.assign(doc, op.doc); return; }
+  const arr = (doc[op.s] ||= []);
+  const i = arr.findIndex((r) => r.id === (op.t === 'put' ? op.r.id : op.id));
+  if (op.t === 'put') { if (i >= 0) arr[i] = op.r; else arr.push(op.r); }
+  if (op.t === 'del' && i >= 0) arr.splice(i, 1);
+}
+async function localDoc() {
+  const d = { version: 1 };
+  for (const s of SYNCED) d[s] = (await all(s)).map((r) => stripRec(s, r));
+  return d;
+}
+async function pushEverything() {
+  await clearStore('queue');
+  for (const s of ['images', 'pow']) {
+    for (const rec of await all(s)) {
+      if ((rec.blob || rec.data) && !rec.path) { rec.path = `${s}/${rec.id}-${Math.random().toString(36).slice(2, 8)}.bin`; await rawPut(s, rec); }
+      if (rec.blob || rec.data) await enqueue({ t: 'file', s, id: rec.id, path: rec.path });
+    }
+  }
+  await enqueue({ t: 'replace', doc: await localDoc() });
+  return flush();
+}
+
+let flushTimer = null, flushing = false, flushAgain = false, lastError = '';
+function scheduleFlush() { clearTimeout(flushTimer); flushTimer = setTimeout(flush, 700); setSync('saving'); }
+async function flush() {
+  if (!canSync()) return;
+  if (flushing) { flushAgain = true; return; }
+  flushing = true;
+  try {
+    let q = await all('queue');
+    if (!q.length) { setSync('saved'); return; }
+    setSync('saving');
+    for (const item of q.filter((x) => x.op.t === 'file')) {
+      const rec = await get(item.op.s, item.op.id);
+      const bytes = rec && (rec.blob ? new Uint8Array(await rec.blob.arrayBuffer()) : rec.data);
+      if (bytes && rec.path === item.op.path) {
+        const r = await uploadFile(item.op.path, bytes, undefined, 'Add file');
+        if (!r.ok && r.status !== 422) throw new Error('GitHub ' + r.status);
+      }
+      await rawDel('queue', item.id);
+    }
+    q = (await all('queue')).filter((x) => x.op.t !== 'file');
+    if (q.length) {
+      for (let attempt = 0; ; attempt++) {
+        const cur = await fetchDoc();
+        const doc = cur ? cur.doc : { version: 1 };
+        for (const item of q) applyOp(doc, item.op);
+        doc.savedAt = new Date().toISOString();
+        const r = await uploadFile('data.enc', new TextEncoder().encode(JSON.stringify(doc)), cur?.sha, `Update records (${q.length} change${q.length === 1 ? '' : 's'})`);
+        if (r.ok) break;
+        if ((r.status === 409 || r.status === 422) && attempt < 4) continue; // someone else saved first: reload and try again
+        throw new Error('GitHub ' + r.status);
+      }
+      for (const item of q) await rawDel('queue', item.id);
+    }
+    lastError = '';
+    setSync((await all('queue')).length ? 'saving' : 'saved');
+  } catch (e) {
+    lastError = e.message === 'badkey' ? 'The key in your link does not match the online records.' : /40[13]/.test(e.message) ? 'GitHub refused your key. It may have expired: set it again in Online saving.' : 'No internet or GitHub not reachable. Will retry.';
+    setSync('pending');
+  } finally {
+    flushing = false;
+    if (flushAgain) { flushAgain = false; flush(); }
+  }
+}
+// Load the latest records from GitHub onto this device
+async function pull() {
+  const cur = await fetchDoc();
+  if (!cur) return false;
+  const pending = (await all('queue')).map((x) => x.op);
+  const doc = cur.doc;
+  for (const op of pending) if (op.t !== 'file') applyOp(doc, op); // keep changes not uploaded yet
+  for (const s of ['sites', 'funds', 'expenses']) { await clearStore(s); for (const r of doc[s] || []) await rawPut(s, r); }
+  for (const s of ['images', 'pow']) {
+    const local = new Map((await all(s)).map((r) => [r.id, r]));
+    const keep = new Set(pending.filter((o) => o.t === 'file' && o.s === s).map((o) => o.id));
+    await clearStore(s);
+    for (const r of doc[s] || []) {
+      const l = local.get(r.id);
+      await rawPut(s, l && l.path === r.path ? { ...r, blob: l.blob, data: l.data } : r);
+      local.delete(r.id);
+    }
+    for (const [id, l] of local) if (keep.has(id)) await rawPut(s, l);
+  }
+  await rawPut('meta', { id: 'seeded', value: true });
+  await rawPut('meta', { id: 'pulledAt', value: doc.savedAt || new Date().toISOString() });
+  return true;
+}
+
+function setSync(state) {
+  const el = $('#syncBtn'); if (!el) return;
+  const txt = !isOnline() ? 'Offline only' : !cfg.token ? 'View only' : { saved: 'Saved online ✓', saving: 'Saving…', pending: 'Not saved online yet' }[state] || 'Online';
+  el.textContent = txt;
+  el.classList.toggle('warn', state === 'pending' || !isOnline());
+  el.title = lastError || '';
+  document.body.classList.toggle('readonly', !canEdit());
+}
+
+async function checkToken(token) {
+  const r = await fetch(`https://api.github.com/repos/${cfg.owner}/${cfg.repo}`, { headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token }, cache: 'no-store' });
+  if (r.status === 404 || r.status === 401) return 'GitHub did not accept that key for ' + cfg.owner + '/' + cfg.repo + '. Check the username, repository name and key.';
+  if (!r.ok) return 'Could not reach GitHub (' + r.status + ').';
+  const j = await r.json();
+  if (j.permissions && !j.permissions.push) return 'That key can only read. Give it "Contents: Read and write".';
+  return '';
+}
+
+const TOKEN_HELP = `<p class="small muted">Get your key on GitHub: <strong>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</strong>.
+  Repository access: <em>Only select repositories</em> → your repo. Permissions: <em>Contents → Read and write</em>. Copy the key (starts with github_pat_).</p>`;
+
+async function onlineDialog() {
+  if (!isOnline()) {
+    const guess = onGithubPages() ? { owner: location.hostname.split('.')[0], repo: location.pathname.split('/').filter(Boolean)[0] || '' } : {};
+    const v = await ask('Set up online saving', `
+      <p>Your records will be saved (encrypted) in your GitHub repository, so you can open them on any phone or computer with your link.</p>
+      <label>GitHub username<input name="owner" value="${esc(cfg.owner || guess.owner || '')}" required></label>
+      <label>Repository<input name="repo" value="${esc(cfg.repo || guess.repo || 'Site_Expenditure_Recorder')}" required></label>
+      <label>GitHub key (token)<input name="token" type="password" required></label>
+      ${TOKEN_HELP}
+      <label>Starting data (backup file, optional)<input name="start" type="file" accept=".json"></label>
+      <label>Already set up on another device? Paste your link<input name="link" placeholder="https://…#k=…"></label>`, { okText: 'Connect' });
+    if (!v) return;
+    const file = $('#dialogBody input[name=start]').files[0];
+    Object.assign(cfg, { owner: v.owner.trim(), repo: v.repo.trim() });
+    const token = v.token.trim();
+    toast('Checking with GitHub…');
+    const err = await checkToken(token);
+    if (err) { toast(err); return; }
+    const linkKey = keyFromLink(v.link);
+    cfg.token = token;
+    let existing = null;
+    try { existing = await fetchDocExists(); } catch { cfg.token = undefined; return toast('Could not reach GitHub. Try again.'); }
+    if (existing) {
+      if (!linkKey) { cfg.token = undefined; return toast('Records are already online. Paste your link (with #k=…) to connect.'); }
+      cfg.key = linkKey;
+      try { await pull(); } catch (e) { cfg.key = undefined; cfg.token = undefined; return toast(e.message === 'badkey' ? 'That link does not match the online records.' : 'Could not load the online records.'); }
+      saveCfg(); setSync('saved'); toast('Connected. Records loaded.'); showHome(); return;
+    }
+    cfg.key = linkKey || b64url(crypto.getRandomValues(new Uint8Array(16)));
+    saveCfg();
+    if (file) { const data = await readBackupFile(file); if (!data) { toast('Starting file is not a backup file; uploading what is on this device'); } else { await loadBackupData(data); } }
+    await seedIfEmpty();
+    toast('Uploading your records…');
+    await pushEverything();
+    setSync(lastError ? 'pending' : 'saved');
+    showHome();
+    return showLinkDialog(true);
+  }
+  if (!cfg.token) {
+    const v = await ask('View only on this device', `<p>Anyone with your link can read the records. To add or change anything on this device, enter your GitHub key.</p>
+      <label>GitHub key (token)<input name="token" type="password"></label>${TOKEN_HELP}
+      <label class="check-row"><input type="checkbox" name="forget"> Remove the records and link from this device</label>`, { okText: 'OK' });
+    if (!v) return;
+    if (v.forget) { await forgetDevice(); return; }
+    const token = v.token.trim(); if (!token) return;
+    const err = await checkToken(token);
+    if (err) return toast(err);
+    cfg.token = token; saveCfg(); setSync('saved'); toast('You can now add and edit on this device');
+    if (site) openSite(site.id); else showHome();
+    flush();
+    return;
+  }
+  return showLinkDialog(false);
+}
+async function fetchDocExists() { const r = await gh('/contents/data.enc'); if (r.status === 404) return false; if (!r.ok) throw new Error('GitHub ' + r.status); return true; }
+
+async function showLinkDialog(first) {
+  const pend = (await all('queue')).length;
+  const v = await ask(first ? 'Online saving is on' : 'Online saving', `
+    <p>${first ? 'Your records are now saved online. ' : ''}Open this link on any phone or computer to see all the records. <strong>Anyone with the link can read them</strong>, so share it only with your bosses. Only devices with your GitHub key can add or change anything.</p>
+    <label>Your link<input id="shareLinkInput" readonly value="${esc(shareLink())}"></label>
+    <button class="btn" id="copyLinkBtn" type="button">Copy link</button>
+    <p class="small muted">${pend ? pend + ' change(s) waiting to upload. ' + esc(lastError) : 'Everything is saved online.'}</p>
+    <p class="small muted">The app must be published with GitHub Pages for the link to open (repo Settings → Pages).</p>
+    <label class="check-row"><input type="checkbox" name="stop"> Stop editing on this device (it becomes view only)</label>`, {
+    okText: 'Done',
+    onOpen: () => { $('#copyLinkBtn').onclick = async () => { const i = $('#shareLinkInput'); i.select(); try { await navigator.clipboard.writeText(i.value); } catch { document.execCommand('copy'); } toast('Link copied'); }; },
+  });
+  if (v && v.stop) { cfg.token = undefined; saveCfg(); setSync(); toast('This device is now view only'); if (site) openSite(site.id); else showHome(); }
+}
+async function forgetDevice() {
+  for (const s of [...STORES, 'queue']) await clearStore(s);
+  cfg = {}; saveCfg();
+  try { localStorage.removeItem('sync'); } catch { /* ignore */ }
+  location.href = location.pathname;
+}
+
 /* ---------------- Tabs & events ---------------- */
 function switchTab(name) {
-  if (!$('#tab-' + name)) name = 'entries';
+  if (!$('#tab-' + name) || (name === 'settings' && !canEdit())) name = 'entries';
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   $$('.tab-panel').forEach((pn) => pn.classList.toggle('hidden', pn.id !== 'tab-' + name));
   sessSet('tab', name);
@@ -889,6 +1169,7 @@ function bind() {
   $('#backBtn').onclick = showHome;
   $('#addSiteBtn').onclick = addSite;
   $('#backupBtn').onclick = backup;
+  $('#syncBtn').onclick = onlineDialog;
   $('#restoreInput').onchange = (e) => { if (e.target.files[0]) restore(e.target.files[0]); e.target.value = ''; };
   $$('.tab').forEach((t) => (t.onclick = () => switchTab(t.dataset.tab)));
 
@@ -935,13 +1216,11 @@ function bind() {
   // Images, lightbox, POW sheet tabs
   document.addEventListener('click', async (e) => {
     const t = e.target;
-    if (t.id === 'unlockBtn') unlockOwner();
-    if (t.id === 'lockBtn') lockOwner();
-    if (t.id === 'editOverview' && await isOwner()) {
+    if (t.id === 'editOverview' && canEdit()) {
       const v = await ask('Site overview', `<label>Overview<textarea name="overview" rows="7" style="font:inherit;padding:8px;border:1px solid var(--line);border-radius:4px">${esc(site.overview || '')}</textarea></label>`, { okText: 'Save' });
       if (v) { site.overview = v.overview.trim(); await saveSite(); renderImages(); }
     }
-    if (t.dataset.imgdel && await isOwner() && await confirmBox('Remove image', 'Remove this image?', 'Remove')) { await del('images', t.dataset.imgdel); renderImages(); }
+    if (t.dataset.imgdel && canEdit() && await confirmBox('Remove image', 'Remove this image?', 'Remove')) { await del('images', t.dataset.imgdel); renderImages(); }
     if (t.dataset.full) {
       const lb = document.createElement('div'); lb.className = 'lightbox'; lb.innerHTML = `<img src="${t.dataset.full}" alt="">`;
       lb.onclick = () => lb.remove(); document.body.appendChild(lb);
@@ -981,8 +1260,40 @@ function bind() {
     return;
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  await seedIfEmpty();
+
+  // A link like https://<user>.github.io/<repo>/#k=KEY: remember the repo and key on this device
+  const k = keyFromLink(location.hash);
+  if (onGithubPages()) {
+    const owner = location.hostname.split('.')[0], repo = location.pathname.split('/').filter(Boolean)[0] || '';
+    if (cfg.owner?.toLowerCase() !== owner.toLowerCase() || cfg.repo !== repo) { cfg = { owner, repo }; }
+  }
+  if (k && k !== cfg.key) { if (cfg.key) await clearStore('queue'); cfg.key = k; }
+  saveCfg();
+  if (k) history.replaceState(null, '', location.pathname);
+
+  if (!isOnline() && !onGithubPages()) await seedIfEmpty();
   bind();
+  setSync();
+  if (isOnline()) {
+    $('#siteList').innerHTML = '<p class="muted">Loading the latest records…</p>';
+    try {
+      const found = await pull();
+      if (!found && canSync()) await pushEverything();
+      if (!found && !canSync()) toast('No records online yet');
+    } catch (e) {
+      lastError = e.message === 'badkey' ? 'This link does not match the online records.' : 'No internet: showing the copy saved on this device.';
+      toast(lastError);
+    }
+    if (canSync()) flush(); else setSync();
+  }
   const m = location.hash.match(/site=([\w]+)/);
   if (m) openSite(m[1]); else showHome();
+
+  // keep in step: retry uploads, and fetch others' changes when you come back to the app
+  window.addEventListener('online', flush);
+  setInterval(async () => { if (canSync() && (await all('queue')).length) flush(); }, 30000);
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible' || !isOnline() || flushing || document.querySelector('dialog[open]')) return;
+    try { if (!(await all('queue')).length && await pull()) { if (site) { site = await get('sites', site.id); if (site) await reload(); else showHome(); } else showHome(); } } catch { /* offline */ }
+  });
 })();
