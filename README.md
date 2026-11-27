@@ -27,14 +27,19 @@ A simple daily expenditure tracker for work sites. Open one link on any phone or
 **Anyone with the link can read the records**, so share it only with your bosses. GitHub keeps every saved version of `data.enc`, so earlier versions can always be recovered.
 
 ## Daily use
-1. Pick the site.
-2. Under **Money from** choose:
-   - **Funds already added**: pick the Fund ID (each shows its balance), or
-   - **A new fund**: the next Fund ID (F11, F12 ...) fills in by itself. Add Date, Received From, Mode, Amount 1 and Amount 2.
-3. Fill in **Used For**, **Category**, **Item** and **Amount (GH¢)**. The quantity boxes for that item appear by themselves (e.g. Cement (bags)). Use "+ Other quantities" for any other one.
-4. Press **Insert**.
+Pick the site. At the top of the form, choose what you're recording:
 
-If you type a "Used For" you've used before, its Category and Item fill in by themselves.
+**Money received:** a budget or money you've been given, even if you haven't spent any of it yet. Fill in Received From, Mode and Amount, then press **Save money received**. It gets the next Fund ID (F1, F2 …) by itself.
+
+**Money spent:**
+1. **Money from**: pick a fund you already added (each shows its balance), or **A new fund** if the money came in and was spent at once.
+2. **Used For**: what you did with it.
+3. **Category** and **Item**: pick from the list, or **type a new one**. New ones are remembered for this site, so next time you just pick them.
+4. **Amount**. When you pick an item you've used before, its last amount and unit fill in. Change them if needed.
+5. **Quantity / Unit** are optional. Leave them empty for things like food or transport.
+6. Press **Insert**.
+
+Each site has its own categories and items. A new site starts blank and builds its list as you enter things.
 
 ## Tabs (same as the Excel sheets)
 - **All Entries**: every entry, with search and filters by fund, category and item. Each entry can be edited or deleted.

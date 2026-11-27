@@ -48,52 +48,62 @@
 
   <!-- All Entries -->
   <section id="tab-entries" class="tab-panel">
-    <form id="entryForm" class="card form-grid owner-only" autocomplete="off">
-      <h3 class="span-all">New entry</h3>
+    <form id="entryForm" class="card form-grid owner-only kind-spent" autocomplete="off">
+      <div class="span-all seg" role="group" aria-label="What are you recording?">
+        <button type="button" class="seg-btn active" data-kind="spent">Money spent</button>
+        <button type="button" class="seg-btn" data-kind="received">Money received</button>
+      </div>
 
-      <fieldset class="span-all fund-choice">
+      <fieldset class="span-all fund-choice spent-only">
         <legend>Money from</legend>
         <label><input type="radio" name="fundMode" value="existing" checked> Funds already added</label>
         <label><input type="radio" name="fundMode" value="new"> A new fund</label>
       </fieldset>
 
-      <div id="existingFundBox" class="span-all">
+      <div id="existingFundBox" class="span-all spent-only">
         <label>Fund ID
           <select id="fundSelect"></select>
         </label>
       </div>
 
       <div id="newFundBox" class="span-all sub-grid hidden">
+        <p class="span-all received-only muted small" style="margin:0">Record money you have received. You can spend from it later by choosing "Funds already added".</p>
         <label>Fund ID<input id="nfCode" type="text"></label>
         <label>Date<input id="nfDate" type="date"></label>
-        <label>Received From<input id="nfFrom" type="text"></label>
+        <label>Received From<input id="nfFrom" type="text" list="fromList"></label>
         <label>Mode<input id="nfMode" type="text" list="modeList"></label>
         <label>Amount 1 (GH¢)<input id="nfAmount1" type="number" step="0.01" min="0" inputmode="decimal"></label>
-        <label>Amount 2 (GH¢)<input id="nfAmount2" type="number" step="0.01" min="0" inputmode="decimal"></label>
+        <label>Amount 2 (GH¢) <span class="muted small">optional</span><input id="nfAmount2" type="number" step="0.01" min="0" inputmode="decimal"></label>
       </div>
 
-      <label>Date
+      <label class="spent-only">Date
         <input id="exDate" type="date">
       </label>
-      <label class="span-3">Used For
-        <input id="exUsedFor" type="text" required list="usedForList">
+      <label class="span-3 spent-only">Used For
+        <input id="exUsedFor" type="text" list="usedForList" placeholder="e.g. Cement 30 bags and transportation">
       </label>
-      <label class="span-2">Category
-        <select id="exCategory" required></select>
+      <label class="span-2 spent-only">Category <span class="muted small">pick or type a new one</span>
+        <input id="exCategory" type="text" list="categoryList" placeholder="e.g. Trench, Roofing, Site Overheads">
       </label>
-      <label class="span-2">Item
-        <select id="exItem" required></select>
+      <label class="span-2 spent-only">Item <span class="muted small">pick or type a new one</span>
+        <input id="exItem" type="text" list="itemList" placeholder="e.g. Cement, Food, Transport">
       </label>
-      <label class="span-2">Amount (GH¢)
-        <input id="exAmount" type="number" step="0.01" min="0" required inputmode="decimal">
+      <label class="span-2 spent-only">Amount (GH¢)
+        <input id="exAmount" type="number" step="0.01" min="0" inputmode="decimal">
       </label>
-      <div class="span-all">
+      <label class="spent-only">Quantity <span class="muted small">optional</span>
+        <input id="exQty" type="number" step="any" min="0" inputmode="decimal">
+      </label>
+      <label class="spent-only">Unit <span class="muted small">optional</span>
+        <input id="exUnit" type="text" list="unitList" placeholder="bags, trips, pcs">
+      </label>
+      <div class="span-all spent-only">
         <div id="qtyBox" class="qty-grid"></div>
         <button id="moreQtyBtn" class="btn-link" type="button">+ Other quantities</button>
       </div>
       <div class="span-all form-actions">
         <span id="fundHint" class="muted"></span>
-        <button class="btn btn-primary" type="submit">Insert</button>
+        <button class="btn btn-primary" type="submit" id="entrySubmit">Insert</button>
       </div>
     </form>
 
@@ -229,6 +239,10 @@
 
 <datalist id="usedForList"></datalist>
 <datalist id="modeList"></datalist>
+<datalist id="categoryList"></datalist>
+<datalist id="itemList"></datalist>
+<datalist id="unitList"></datalist>
+<datalist id="fromList"></datalist>
 
 <!-- Dialog -->
 <dialog id="dialog">

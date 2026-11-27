@@ -131,8 +131,9 @@ const itemDef = (name) => site.items.find((i) => i.name === name);
 const fundNo = (code) => { const m = /(\d+)\s*$/.exec(code || ''); return m ? +m[1] : 0; };
 const nextFundCode = () => 'F' + (Math.max(0, ...funds.map((f) => fundNo(f.code))) + 1);
 
-function qtyText(e) { // all quantities on an entry, e.g. "Cement (bags): 30"
-  return Object.entries(e.qty || {}).filter(([, v]) => v).map(([k, v]) => `${qtyField(k)?.label || k}: ${plain(v)}`).join(', ');
+function qtyText(e) { // all quantities on an entry, e.g. "30 bags" or "Cement (bags): 30"
+  const simple = e.q ? [`${plain(e.q)} ${e.unit || ''}`.trim()] : [];
+  return [...simple, ...Object.entries(e.qty || {}).filter(([, v]) => v).map(([k, v]) => `${qtyField(k)?.label || k}: ${plain(v)}`)].join(', ');
 }
 // Categories sheet rows: item, quantity summary, total amount — like the Trench / Production Room sheets
 function categorySheet(cat) {
@@ -146,8 +147,12 @@ function categorySheet(cat) {
     const q = (def?.qty || []).map(({ field, suffix }) => {
       const s = es.reduce((t, e) => t + num(e.qty?.[field]), 0);
       return s > 0 ? `${plain(s)} ${suffix}`.trim() : '';
-    }).filter(Boolean).join(', ');
-    rows.push({ item: name, quantity: q, amount: es.reduce((t, e) => t + e.amount, 0) });
+    }).filter(Boolean);
+    // plus the simple Quantity + Unit, added up per unit (e.g. "12 trips")
+    const byUnit = new Map();
+    for (const e of es) if (e.q) byUnit.set(e.unit || '', (byUnit.get(e.unit || '') || 0) + num(e.q));
+    for (const [unit, s] of byUnit) q.push(`${plain(s)} ${unit}`.trim());
+    rows.push({ item: name, quantity: q.join(", "), amount: es.reduce((t, e) => t + e.amount, 0) });
   }
   return { rows, total: inCat.reduce((t, e) => t + e.amount, 0) };
 }
@@ -250,6 +255,7 @@ async function openSite(id) {
   $('#nfDate').value = today();
   showAllQty = false;
   await reload();
+  setKind(funds.length ? 'spent' : 'received');
   switchTab(sessGet('tab') || 'entries');
 }
 const saveSite = () => put('sites', site);
@@ -289,15 +295,13 @@ function renderFormLists() {
   if (!funds.length) $('input[name=fundMode][value=new]').checked = true;
   $('#nfCode').value = nextFundCode();
 
-  const cSel = $('#exCategory'); const cPrev = cSel.value;
-  cSel.innerHTML = site.categories.length ? '<option value="">— choose —</option>' + site.categories.map((c) => opt(c)).join('') : '<option value="">Add categories in Settings</option>';
-  cSel.value = site.categories.includes(cPrev) ? cPrev : '';
-  const iSel = $('#exItem'); const iPrev = iSel.value;
-  iSel.innerHTML = site.items.length ? '<option value="">— choose —</option>' + site.items.map((i) => opt(i.name)).join('') : '<option value="">Add items in Settings</option>';
-  iSel.value = site.items.some((i) => i.name === iPrev) ? iPrev : '';
-
-  $('#usedForList').innerHTML = [...new Set(entries.map((e) => e.usedFor))].map((d) => `<option value="${esc(d)}">`).join('');
-  $('#modeList').innerHTML = site.modes.map((m) => `<option value="${esc(m)}">`).join('');
+  const dl = (values) => [...new Set(values.filter(Boolean))].map((d) => `<option value="${esc(d)}">`).join('');
+  $('#categoryList').innerHTML = dl(site.categories);
+  renderItemList();
+  $('#usedForList').innerHTML = dl(entries.map((e) => e.usedFor));
+  $('#modeList').innerHTML = dl(site.modes);
+  $('#unitList').innerHTML = dl([...entries.map((e) => e.unit), 'bags', 'trips', 'pcs', 'days', 'ft']);
+  $('#fromList').innerHTML = dl(funds.map((f) => f.receivedFrom));
 
   // filters
   const fill = (el, first, values) => { const pv = el.value; el.innerHTML = `<option value="">${first}</option>` + values.map((v) => opt(v)).join(''); el.value = values.includes(pv) ? pv : ''; };
@@ -311,14 +315,44 @@ function renderFormLists() {
   renderQtyInputs();
 }
 
+// Items list: the ones already used under the chosen Category come first
+function renderItemList() {
+  const cat = $('#exCategory').value.trim();
+  const used = [...new Set(entries.filter((e) => e.category === cat).map((e) => e.item))];
+  const rest = site.items.map((i) => i.name).filter((n) => !used.includes(n));
+  $('#itemList').innerHTML = [...used, ...rest].map((d) => `<option value="${esc(d)}">`).join('');
+}
+// Picking an item fills in what you used last time for it (amount, unit, category)
+function onItemPicked() {
+  renderQtyInputs();
+  const name = $('#exItem').value.trim();
+  const last = [...entries].reverse().find((e) => e.item.toLowerCase() === name.toLowerCase());
+  if (!last) return;
+  if (!$('#exCategory').value.trim()) $('#exCategory').value = last.category;
+  if (!$('#exAmount').value) { $('#exAmount').value = last.amount; updateFundHint(); }
+  if (!$('#exUnit').value && last.unit) $('#exUnit').value = last.unit;
+}
+
+let entryKind = 'spent';
+function setKind(kind) {
+  entryKind = kind;
+  const f = $('#entryForm');
+  f.classList.toggle('kind-received', kind === 'received');
+  f.classList.toggle('kind-spent', kind === 'spent');
+  $$('.seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.kind === kind));
+  $('#entrySubmit').textContent = kind === 'received' ? 'Save money received' : 'Insert';
+  updateFundMode();
+}
+
 function updateFundMode() {
-  const isNew = $('input[name=fundMode]:checked').value === 'new';
+  const isNew = entryKind === 'received' || $('input[name=fundMode]:checked').value === 'new';
   $('#newFundBox').classList.toggle('hidden', !isNew);
   $('#existingFundBox').classList.toggle('hidden', isNew);
   updateFundHint();
 }
 
 function updateFundHint() {
+  if (entryKind === 'received') { $('#fundHint').textContent = ''; return; }
   const isNew = $('input[name=fundMode]:checked').value === 'new';
   const amt = num($('#exAmount').value);
   let bal;
@@ -334,29 +368,61 @@ function updateFundHint() {
 function renderQtyInputs() {
   const keep = {};
   $$('#qtyBox input').forEach((i) => { if (i.value !== '') keep[i.dataset.q] = i.value; });
-  const linked = (itemDef($('#exItem').value)?.qty || []).map((q) => q.field);
+  // Extra quantity columns (like the Berekum Excel) show only for items set up with them
+  const linked = (itemDef($('#exItem').value.trim())?.qty || []).map((q) => q.field);
   const fields = site.qtyFields.filter((f) => showAllQty || linked.includes(f.id) || keep[f.id] !== undefined);
   $('#qtyBox').innerHTML = fields.map((f) => `<label>${esc(f.label)}<input type="number" step="any" min="0" data-q="${f.id}" value="${esc(keep[f.id] ?? '')}"></label>`).join('');
   $('#moreQtyBtn').classList.toggle('hidden', showAllQty || !site.qtyFields.length || fields.length === site.qtyFields.length);
+  // the simple Quantity / Unit boxes are for items without their own quantity columns
+  $$('#exQty, #exUnit').forEach((el) => el.closest('label').classList.toggle('hidden', linked.length > 0));
+}
+
+// Typed a new Category / Item / Mode? Remember it for this site so it can be picked next time.
+async function learnLists(category, item, mode) {
+  let changed = false;
+  const find = (arr, v) => arr.find((x) => x.toLowerCase() === v.toLowerCase());
+  if (category && !find(site.categories, category)) { site.categories.push(category); changed = true; }
+  if (item && !find(site.items.map((i) => i.name), item)) { site.items.push({ name: item, qty: [] }); changed = true; }
+  if (mode && !find(site.modes, mode)) { site.modes.push(mode); changed = true; }
+  if (changed) await saveSite();
+}
+// Use the list's spelling if the typed text matches one already there (e.g. "cement" -> "Cement")
+function canonical(list, v) { v = v.trim(); return list.find((x) => x.toLowerCase() === v.toLowerCase()) || v; }
+
+async function addFundFromForm() {
+  const a1 = num($('#nfAmount1').value), a2 = num($('#nfAmount2').value);
+  if (a1 + a2 <= 0) { toast('Enter the amount received'); return null; }
+  const code = $('#nfCode').value.trim() || nextFundCode();
+  if (funds.some((f) => f.code.toLowerCase() === code.toLowerCase())) { toast(`Fund ID ${code} already exists`); return null; }
+  const mode = canonical(site.modes, $('#nfMode').value);
+  await learnLists('', '', mode);
+  const f = { id: uid(), siteId: site.id, code, date: $('#nfDate').value, receivedFrom: $('#nfFrom').value.trim(), mode, amount1: a1, amount2: a2, createdAt: Date.now() };
+  await put('funds', f);
+  ['#nfAmount1', '#nfAmount2', '#nfFrom', '#nfMode'].forEach((s) => ($(s).value = ''));
+  return f;
 }
 
 async function submitEntry(ev) {
   ev.preventDefault();
+  if (entryKind === 'received') {
+    const f = await addFundFromForm(); if (!f) return;
+    $('input[name=fundMode][value=existing]').checked = true;
+    await reload();
+    $('#fundSelect').value = f.id; updateFundMode();
+    toast(`Money received saved as ${f.code}`);
+    return;
+  }
   const isNew = $('input[name=fundMode]:checked').value === 'new';
   const amount = num($('#exAmount').value);
-  if (!$('#exCategory').value) return toast('Choose a Category');
-  if (!$('#exItem').value) return toast('Choose an Item');
+  const category = canonical(site.categories, $('#exCategory').value);
+  const item = canonical(site.items.map((i) => i.name), $('#exItem').value);
+  if (!$('#exUsedFor').value.trim()) return toast('Enter what it was Used For');
+  if (!category) return toast('Enter a Category');
+  if (!item) return toast('Enter an Item');
   if (amount <= 0) return toast('Enter the Amount');
   let fundId;
   if (isNew) {
-    const a1 = num($('#nfAmount1').value), a2 = num($('#nfAmount2').value);
-    if (a1 + a2 <= 0) return toast('Enter the amount received for the new fund');
-    const code = $('#nfCode').value.trim() || nextFundCode();
-    if (funds.some((f) => f.code.toLowerCase() === code.toLowerCase())) return toast(`Fund ID ${code} already exists`);
-    const mode = $('#nfMode').value.trim();
-    if (mode && !site.modes.includes(mode)) { site.modes.push(mode); await saveSite(); }
-    const f = { id: uid(), siteId: site.id, code, date: $('#nfDate').value, receivedFrom: $('#nfFrom').value.trim(), mode, amount1: a1, amount2: a2, createdAt: Date.now() };
-    await put('funds', f);
+    const f = await addFundFromForm(); if (!f) return;
     fundId = f.id;
   } else {
     fundId = $('#fundSelect').value;
@@ -367,15 +433,18 @@ async function submitEntry(ev) {
   }
   const qty = {};
   $$('#qtyBox input').forEach((i) => { if (num(i.value)) qty[i.dataset.q] = num(i.value); });
+  const simpleShown = !$('#exQty').closest('label').classList.contains('hidden');
+  await learnLists(category, item, '');
   await put('expenses', {
     id: uid(), siteId: site.id, fundId, date: $('#exDate').value, usedFor: $('#exUsedFor').value.trim(),
-    category: $('#exCategory').value, item: $('#exItem').value, amount, qty, createdAt: Date.now(),
+    category, item, amount, qty,
+    q: simpleShown && num($('#exQty').value) ? num($('#exQty').value) : null,
+    unit: simpleShown && num($('#exQty').value) ? $('#exUnit').value.trim() : '',
+    createdAt: Date.now(),
   });
-  $('#exUsedFor').value = ''; $('#exAmount').value = '';
-  $('#exCategory').value = ''; $('#exItem').value = '';
+  ['#exUsedFor', '#exAmount', '#exCategory', '#exItem', '#exQty', '#exUnit'].forEach((s) => ($(s).value = ''));
   $$('#qtyBox input').forEach((i) => (i.value = ''));
   showAllQty = false;
-  ['#nfAmount1', '#nfAmount2', '#nfFrom', '#nfMode'].forEach((s) => ($(s).value = ''));
   if (isNew) $('input[name=fundMode][value=existing]').checked = true;
   await reload();
   if (isNew) { $('#fundSelect').value = fundId; updateFundHint(); }
@@ -403,21 +472,23 @@ function renderEntries() {
 
 async function editEntry(id) {
   const e = entries.find((x) => x.id === id); if (!e) return;
-  const cats = [...new Set([...site.categories, e.category])];
-  const items = [...new Set([...site.items.map((i) => i.name), e.item])];
   const v = await ask('Edit entry', `
     <label>Fund ID<select name="fundId">${sortedFunds().map((f) => opt(f.id, f.code + (f.receivedFrom ? ' – ' + f.receivedFrom : ''), f.id === e.fundId)).join('')}</select></label>
     <label>Date<input name="date" type="date" value="${e.date || ''}"></label>
     <label>Used For<input name="usedFor" value="${esc(e.usedFor)}"></label>
-    <label>Category<select name="category">${cats.map((c) => opt(c, c, c === e.category)).join('')}</select></label>
-    <label>Item<select name="item">${items.map((c) => opt(c, c, c === e.item)).join('')}</select></label>
+    <label>Category<input name="category" list="categoryList" value="${esc(e.category)}"></label>
+    <label>Item<input name="item" list="itemList" value="${esc(e.item)}"></label>
     <label>Amount (${CUR})<input name="amount" type="number" step="0.01" value="${e.amount}"></label>
-    <div class="qty-grid">${site.qtyFields.map((f) => `<label>${esc(f.label)}<input name="q_${f.id}" type="number" step="any" min="0" value="${e.qty?.[f.id] ?? ''}"></label>`).join('')}</div>`, { okText: 'Save' });
+    <div class="qty-grid"><label>Quantity<input name="q" type="number" step="any" min="0" value="${e.q ?? ''}"></label><label>Unit<input name="unit" list="unitList" value="${esc(e.unit || '')}"></label>
+    ${site.qtyFields.map((f) => `<label>${esc(f.label)}<input name="q_${f.id}" type="number" step="any" min="0" value="${e.qty?.[f.id] ?? ''}"></label>`).join('')}</div>`, { okText: 'Save' });
   if (!v) return;
   const qty = {};
   for (const f of site.qtyFields) if (num(v['q_' + f.id])) qty[f.id] = num(v['q_' + f.id]);
   for (const [k, val] of Object.entries(e.qty || {})) if (!qtyField(k)) qty[k] = val; // keep removed columns' data
-  Object.assign(e, { fundId: v.fundId, date: v.date, usedFor: v.usedFor.trim(), category: v.category, item: v.item, amount: num(v.amount), qty });
+  const category = canonical(site.categories, v.category), item = canonical(site.items.map((i) => i.name), v.item);
+  if (!category || !item) return toast('Category and Item are needed');
+  await learnLists(category, item, '');
+  Object.assign(e, { fundId: v.fundId, date: v.date, usedFor: v.usedFor.trim(), category, item, amount: num(v.amount), qty, q: num(v.q) || null, unit: num(v.q) ? v.unit.trim() : '' });
   await put('expenses', e); await reload(); toast('Saved');
 }
 
@@ -726,10 +797,12 @@ function downloadExcel() {
   XLSX.utils.book_append_sheet(wb, makeSheet(tAoa, 'B2', [2, 9, 12, 28, 16, 16, 16, 20, 14, 14], [5, 6, 7, 8, 9], 5), sheetName('Total', used));
   // All Entries
   const qf = site.qtyFields;
+  const simple = entries.some((e) => e.q); // Quantity + Unit columns only when used
+  const sh = simple ? ['Quantity', 'Unit'] : [];
   const eAoa = [[], ['', 'All Entries'], [], ['', '', '', '', '', 'Total Used', totalUsed()],
-    ['No.', 'Fund ID', 'Date', 'Used For', 'Category', 'Item', `Amount (${CUR})`, ...qf.map((q) => q.label)],
-    ...entries.map((e, i) => [i + 1, fundCode(e.fundId), fmtDate(e.date), e.usedFor, e.category, e.item, e.amount, ...qf.map((q) => num(e.qty?.[q.id]) || '')])];
-  XLSX.utils.book_append_sheet(wb, makeSheet(eAoa, 'A1', [6, 9, 12, 70, 24, 36, 14, ...qf.map((q) => Math.max(12, q.label.length + 2))], [6], 3), sheetName('All Entries', used));
+    ['No.', 'Fund ID', 'Date', 'Used For', 'Category', 'Item', `Amount (${CUR})`, ...sh, ...qf.map((q) => q.label)],
+    ...entries.map((e, i) => [i + 1, fundCode(e.fundId), fmtDate(e.date), e.usedFor, e.category, e.item, e.amount, ...(simple ? [e.q || '', e.q ? e.unit || '' : ''] : []), ...qf.map((q) => num(e.qty?.[q.id]) || '')])];
+  XLSX.utils.book_append_sheet(wb, makeSheet(eAoa, 'A1', [6, 9, 12, 70, 24, 36, 14, ...(simple ? [10, 10] : []), ...qf.map((q) => Math.max(12, q.label.length + 2))], [6], 3), sheetName('All Entries', used));
   // Summary
   const r = totalReceived(), u = totalUsed(); const cats = allCategories();
   const left = [['Summary'], [], ['Total Received', r], ['Total Used', u], ['Balance', r - u], [], ['Spent On', `Amount (${CUR})`, '% of Used'],
@@ -1177,7 +1250,10 @@ function bind() {
   $$('input[name=fundMode]').forEach((r) => (r.onchange = updateFundMode));
   ['#fundSelect', '#exAmount', '#nfAmount1', '#nfAmount2'].forEach((s) => $(s).addEventListener('input', updateFundHint));
   $('#fundSelect').addEventListener('change', updateFundHint);
-  $('#exItem').addEventListener('change', renderQtyInputs);
+  $$('.seg-btn').forEach((b) => (b.onclick = () => setKind(b.dataset.kind)));
+  $('#exItem').addEventListener('change', onItemPicked);
+  $('#exItem').addEventListener('input', renderQtyInputs);
+  $('#exCategory').addEventListener('input', renderItemList);
   $('#moreQtyBtn').onclick = () => { showAllQty = true; renderQtyInputs(); };
   $('#entryForm').onsubmit = submitEntry;
   // Typing a "Used For" used before fills in its Category and Item
@@ -1185,8 +1261,10 @@ function bind() {
     const v = $('#exUsedFor').value.trim().toLowerCase();
     const last = [...entries].reverse().find((e) => e.usedFor.toLowerCase() === v);
     if (!last) return;
-    if (site.categories.includes(last.category)) $('#exCategory').value = last.category;
-    if (itemDef(last.item)) { $('#exItem').value = last.item; renderQtyInputs(); }
+    $('#exCategory').value = last.category; renderItemList();
+    $('#exItem').value = last.item; renderQtyInputs();
+    if (!$('#exAmount').value) { $('#exAmount').value = last.amount; updateFundHint(); }
+    if (!$('#exUnit').value && last.unit) $('#exUnit').value = last.unit;
   });
   ['#fSearch', '#fFund', '#fCategory', '#fItem'].forEach((s) => $(s).addEventListener('input', renderEntries));
   $$('.xlsxBtn').forEach((b) => (b.onclick = downloadExcel));

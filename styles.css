@@ -196,3 +196,13 @@ body.readonly [data-edit], body.readonly [data-del], body.readonly [data-fedit],
   .topbar h1 { flex-basis: 100%; order: 2; font-size: 16px; }
   .topbar-right { margin-left: auto; }
 }
+
+/* Money spent / received switch */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; justify-self: start; }
+.seg-btn { background: var(--card); border: 0; padding: 8px 18px; font: inherit; cursor: pointer; color: var(--muted); }
+.seg-btn + .seg-btn { border-left: 1px solid var(--line); }
+.seg-btn.active { background: var(--accent); color: var(--accent-text); }
+.kind-received .spent-only { display: none !important; }
+.kind-spent .received-only { display: none !important; }
+.kind-received #newFundBox { display: grid !important; }
+label .small { font-weight: normal; }
